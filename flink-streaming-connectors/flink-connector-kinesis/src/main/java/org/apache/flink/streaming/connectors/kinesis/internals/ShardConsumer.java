@@ -22,7 +22,7 @@ import com.amazonaws.services.kinesis.model.GetRecordsResult;
 import com.amazonaws.services.kinesis.model.Record;
 import com.amazonaws.services.kinesis.model.ShardIteratorType;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.connectors.kinesis.config.KinesisConfigConstants;
+import org.apache.flink.streaming.connectors.kinesis.config.ConsumerConfigConstants;
 import org.apache.flink.streaming.connectors.kinesis.model.KinesisStreamShard;
 import org.apache.flink.streaming.connectors.kinesis.model.SentinelSequenceNumber;
 import org.apache.flink.streaming.connectors.kinesis.model.SequenceNumber;
@@ -54,6 +54,7 @@ public class ShardConsumer<T> implements Runnable {
 	private final KinesisStreamShard subscribedShard;
 
 	private final int maxNumberOfRecordsPerFetch;
+	private final long fetchIntervalMillis;
 
 	private SequenceNumber lastSequenceNum;
 
@@ -92,8 +93,11 @@ public class ShardConsumer<T> implements Runnable {
 		Properties consumerConfig = fetcherRef.getConsumerConfiguration();
 		this.kinesis = kinesis;
 		this.maxNumberOfRecordsPerFetch = Integer.valueOf(consumerConfig.getProperty(
-			KinesisConfigConstants.CONFIG_SHARD_GETRECORDS_MAX,
-			Integer.toString(KinesisConfigConstants.DEFAULT_SHARD_GETRECORDS_MAX)));
+			ConsumerConfigConstants.SHARD_GETRECORDS_MAX,
+			Integer.toString(ConsumerConfigConstants.DEFAULT_SHARD_GETRECORDS_MAX)));
+		this.fetchIntervalMillis = Long.valueOf(consumerConfig.getProperty(
+			ConsumerConfigConstants.SHARD_GETRECORDS_INTERVAL_MILLIS,
+			Long.toString(ConsumerConfigConstants.DEFAULT_SHARD_GETRECORDS_INTERVAL_MILLIS)));
 	}
 
 	@SuppressWarnings("unchecked")
@@ -156,6 +160,10 @@ public class ShardConsumer<T> implements Runnable {
 					// we can close this consumer thread once we've reached the end of the subscribed shard
 					break;
 				} else {
+					if (fetchIntervalMillis != 0) {
+						Thread.sleep(fetchIntervalMillis);
+					}
+
 					GetRecordsResult getRecordsResult = kinesis.getRecords(nextShardItr, maxNumberOfRecordsPerFetch);
 
 					// each of the Kinesis records may be aggregated, so we must deaggregate them before proceeding
@@ -201,12 +209,15 @@ public class ShardConsumer<T> implements Runnable {
 		byte[] dataBytes = new byte[recordData.remaining()];
 		recordData.get(dataBytes);
 
-		byte[] keyBytes = record.getPartitionKey().getBytes();
-
 		final long approxArrivalTimestamp = record.getApproximateArrivalTimestamp().getTime();
 
 		final T value = deserializer.deserialize(
-			keyBytes, dataBytes, subscribedShard.getStreamName(), record.getSequenceNumber(), approxArrivalTimestamp);
+			dataBytes,
+			record.getPartitionKey(),
+			record.getSequenceNumber(),
+			approxArrivalTimestamp,
+			subscribedShard.getStreamName(),
+			subscribedShard.getShard().getShardId());
 
 		if (record.isAggregated()) {
 			fetcherRef.emitRecordAndUpdateState(

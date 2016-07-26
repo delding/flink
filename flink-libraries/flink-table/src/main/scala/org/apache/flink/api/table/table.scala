@@ -17,16 +17,15 @@
  */
 package org.apache.flink.api.table
 
-import scala.collection.JavaConverters._
 import org.apache.calcite.rel.RelNode
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.table.plan.RexNodeTranslator.extractAggregations
 import org.apache.flink.api.java.operators.join.JoinType
-import org.apache.flink.api.table.expressions._
-import org.apache.flink.api.table.plan.logical
+import org.apache.flink.api.table.expressions.{Asc, ExpressionParser, UnresolvedAlias, Expression, Ordering}
+import org.apache.flink.api.table.plan.RexNodeTranslator.extractAggregations
 import org.apache.flink.api.table.plan.logical._
 import org.apache.flink.api.table.sinks.TableSink
-import org.apache.flink.api.table.typeutils.TypeConverter
+
+import scala.collection.JavaConverters._
 
 /**
   * A Table is the core component of the Table API.
@@ -203,7 +202,7 @@ class Table(
     */
   def groupBy(fields: Expression*): GroupedTable = {
     if (tableEnv.isInstanceOf[StreamTableEnvironment]) {
-      throw new TableException(s"Group by on stream tables is currently not supported.")
+      throw new ValidationException(s"Group by on stream tables is currently not supported.")
     }
     new GroupedTable(this, fields)
   }
@@ -393,7 +392,6 @@ class Table(
   }
 
   private def join(right: Table, joinPredicate: Option[Expression], joinType: JoinType): Table = {
-
     // check that right table belongs to the same TableEnvironment
     if (right.tableEnv != this.tableEnv) {
       throw new ValidationException("Only tables from the same TableEnvironment can be joined.")
@@ -423,7 +421,7 @@ class Table(
       throw new ValidationException("Only tables from the same TableEnvironment can be " +
         "subtracted.")
     }
-    new Table(tableEnv, logical.Minus(logicalPlan, right.logicalPlan, all = false)
+    new Table(tableEnv, Minus(logicalPlan, right.logicalPlan, all = false)
       .validate(tableEnv))
   }
 
@@ -448,7 +446,7 @@ class Table(
       throw new ValidationException("Only tables from the same TableEnvironment can be " +
         "subtracted.")
     }
-    new Table(tableEnv, logical.Minus(logicalPlan, right.logicalPlan, all = true)
+    new Table(tableEnv, Minus(logicalPlan, right.logicalPlan, all = true)
       .validate(tableEnv))
   }
 
@@ -465,14 +463,11 @@ class Table(
     * }}}
     */
   def union(right: Table): Table = {
-    if (tableEnv.isInstanceOf[StreamTableEnvironment]) {
-      throw new TableException(s"Union on stream tables is currently not supported.")
-    }
     // check that right table belongs to the same TableEnvironment
     if (right.tableEnv != this.tableEnv) {
       throw new ValidationException("Only tables from the same TableEnvironment can be unioned.")
     }
-    new Table(tableEnv, Union(logicalPlan, right.logicalPlan, false).validate(tableEnv))
+    new Table(tableEnv, Union(logicalPlan, right.logicalPlan, all = false).validate(tableEnv))
   }
 
   /**
@@ -492,7 +487,7 @@ class Table(
     if (right.tableEnv != this.tableEnv) {
       throw new ValidationException("Only tables from the same TableEnvironment can be unioned.")
     }
-    new Table(tableEnv, Union(logicalPlan, right.logicalPlan, true).validate(tableEnv))
+    new Table(tableEnv, Union(logicalPlan, right.logicalPlan, all = true).validate(tableEnv))
   }
 
   /**
@@ -510,9 +505,6 @@ class Table(
     * }}}
     */
   def intersect(right: Table): Table = {
-    if (tableEnv.isInstanceOf[StreamTableEnvironment]) {
-      throw new TableException(s"Intersect on stream tables is currently not supported.")
-    }
     // check that right table belongs to the same TableEnvironment
     if (right.tableEnv != this.tableEnv) {
       throw new ValidationException(
@@ -536,9 +528,6 @@ class Table(
     * }}}
     */
   def intersectAll(right: Table): Table = {
-    if (tableEnv.isInstanceOf[StreamTableEnvironment]) {
-      throw new TableException(s"Intersect on stream tables is currently not supported.")
-    }
     // check that right table belongs to the same TableEnvironment
     if (right.tableEnv != this.tableEnv) {
       throw new ValidationException(
@@ -598,7 +587,7 @@ class Table(
     val rowType = getRelNode.getRowType
     val fieldNames: Array[String] = rowType.getFieldNames.asScala.toArray
     val fieldTypes: Array[TypeInformation[_]] = rowType.getFieldList.asScala
-      .map(f => TypeConverter.sqlTypeToTypeInfo(f.getType.getSqlTypeName)).toArray
+      .map(field => FlinkTypeFactory.toTypeInfo(field.getType)).toArray
 
     // configure the table sink
     val configuredSink = sink.configure(fieldNames, fieldTypes)
